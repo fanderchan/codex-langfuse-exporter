@@ -103,6 +103,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Value to emit as langfuse.environment (default: %(default)s)",
     )
     parser.add_argument(
+        "--prompt",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include prompt/user input text in exported Langfuse fields (default: enabled)",
+    )
+    parser.add_argument(
+        "--output",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include final assistant output text in exported Langfuse fields (default: enabled)",
+    )
+    parser.add_argument(
+        "--usage",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include token usage details in exported Langfuse fields (default: enabled)",
+    )
+    parser.add_argument(
         "--timeout-sec",
         type=int,
         default=DEFAULT_TIMEOUT_SEC,
@@ -114,6 +132,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if not (args.prompt or args.output or args.usage):
+        parser.error("at least one of --prompt, --output, or --usage must be enabled")
 
     header_overrides = dict(parse_header_arg(raw) for raw in args.headers)
     options = SyncOptions(
@@ -128,6 +148,9 @@ def main(argv: list[str] | None = None) -> int:
         header_overrides=header_overrides,
         public_key_override=args.public_key,
         langfuse_environment=args.langfuse_environment,
+        include_prompt=args.prompt,
+        include_output=args.output,
+        include_usage=args.usage,
         timeout_sec=args.timeout_sec,
     )
 

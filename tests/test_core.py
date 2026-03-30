@@ -12,6 +12,9 @@ SRC_ROOT = TESTS_ROOT.parent / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
+from codex_langfuse_exporter.cli import build_parser
+from codex_langfuse_exporter.core import DEFAULT_CODEX_CONFIG
+from codex_langfuse_exporter.core import DEFAULT_CODEX_SESSIONS
 from codex_langfuse_exporter.core import build_payload
 from codex_langfuse_exporter.core import parse_session
 
@@ -189,6 +192,150 @@ class BuildPayloadTests(unittest.TestCase):
         self.assertEqual(attrs["langfuse.observation.type"], "generation")
         self.assertEqual(attrs["langfuse.observation.input"], "Ship a release")
         self.assertEqual(attrs["langfuse.observation.output"], "Release notes are ready.")
+
+    def test_build_payload_can_export_usage_only_without_text_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session_path = Path(tmpdir) / "session-foo.jsonl"
+            lines = [
+                {
+                    "type": "session_meta",
+                    "timestamp": "2026-03-30T01:00:00Z",
+                    "payload": {"id": "sess-3", "cli_version": "0.3.0"},
+                },
+                {
+                    "type": "event_msg",
+                    "timestamp": "2026-03-30T01:00:01Z",
+                    "payload": {"type": "task_started", "turn_id": "turn-3"},
+                },
+                {
+                    "type": "turn_context",
+                    "timestamp": "2026-03-30T01:00:02Z",
+                    "payload": {"turn_id": "turn-3", "model": "gpt-5.4"},
+                },
+                {
+                    "type": "response_item",
+                    "timestamp": "2026-03-30T01:00:03Z",
+                    "payload": {
+                        "turn_id": "turn-3",
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"text": "Do not leak this prompt"}],
+                    },
+                },
+                {
+                    "type": "response_item",
+                    "timestamp": "2026-03-30T01:00:04Z",
+                    "payload": {
+                        "turn_id": "turn-3",
+                        "type": "message",
+                        "role": "assistant",
+                        "phase": "final",
+                        "content": [{"text": "Do not leak this output either"}],
+                    },
+                },
+                {
+                    "type": "event_msg",
+                    "timestamp": "2026-03-30T01:00:05Z",
+                    "payload": {
+                        "turn_id": "turn-3",
+                        "type": "token_count",
+                        "info": {
+                            "last_token_usage": {
+                                "input_tokens": 50,
+                                "cached_input_tokens": 10,
+                                "output_tokens": 12,
+                                "reasoning_output_tokens": 2,
+                                "total_tokens": 62,
+                            }
+                        },
+                    },
+                },
+            ]
+            session_path.write_text(
+                "".join(json.dumps(line) + "\n" for line in lines),
+                encoding="utf-8",
+            )
+            _, _, turns = parse_session(session_path)
+
+        payload = build_payload(
+            turns,
+            public_key="pk-lf-test",
+            cli_version="0.3.0",
+            langfuse_environment="prod",
+            include_prompt=False,
+            include_output=False,
+            include_usage=True,
+        )
+
+        span = payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+        attrs = {item["key"]: item["value"]["stringValue"] for item in span["attributes"]}
+        self.assertEqual(attrs["langfuse.trace.name"], "Codex Turn turn-3")
+        self.assertNotIn("langfuse.trace.input", attrs)
+        self.assertNotIn("langfuse.trace.output", attrs)
+        self.assertNotIn("langfuse.observation.input", attrs)
+        self.assertNotIn("langfuse.observation.output", attrs)
+        self.assertEqual(
+            json.loads(attrs["langfuse.observation.usage_details"]),
+            {
+                "input": 40,
+                "input_cached_tokens": 10,
+                "output": 10,
+                "output_reasoning_tokens": 2,
+                "total": 62,
+            },
+        )
+
+    def test_sync_fingerprint_changes_when_export_selection_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            session_path = Path(tmpdir) / "session-bar.jsonl"
+            lines = [
+                {
+                    "type": "session_meta",
+                    "timestamp": "2026-03-30T01:00:00Z",
+                    "payload": {"id": "sess-4", "cli_version": "0.4.0"},
+                },
+                {
+                    "type": "event_msg",
+                    "timestamp": "2026-03-30T01:00:01Z",
+                    "payload": {"type": "task_started", "turn_id": "turn-4"},
+                },
+                {
+                    "type": "response_item",
+                    "timestamp": "2026-03-30T01:00:02Z",
+                    "payload": {
+                        "turn_id": "turn-4",
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"text": "private prompt"}],
+                    },
+                },
+            ]
+            session_path.write_text(
+                "".join(json.dumps(line) + "\n" for line in lines),
+                encoding="utf-8",
+            )
+            _, _, turns = parse_session(session_path)
+
+        self.assertEqual(len(turns), 1)
+        self.assertNotEqual(
+            turns[0].sync_fingerprint(),
+            turns[0].sync_fingerprint(include_prompt=False, include_output=False),
+        )
+
+
+class ConfigDefaultsTests(unittest.TestCase):
+    def test_default_codex_paths_use_user_home_directory(self) -> None:
+        codex_root = Path.home() / ".codex"
+        self.assertEqual(DEFAULT_CODEX_CONFIG, codex_root / "config.toml")
+        self.assertEqual(DEFAULT_CODEX_SESSIONS, codex_root / "sessions")
+
+
+class CliTests(unittest.TestCase):
+    def test_cli_supports_disabling_prompt_and_output(self) -> None:
+        args = build_parser().parse_args(["--no-prompt", "--no-output"])
+        self.assertFalse(args.prompt)
+        self.assertFalse(args.output)
+        self.assertTrue(args.usage)
 
 
 if __name__ == "__main__":

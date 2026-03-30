@@ -6,11 +6,11 @@ After=network-online.target
 [Service]
 Type=oneshot
 # Update EXPORTER_ROOT before installing if you place the project elsewhere.
-Environment=EXPORTER_ROOT=/usr/local/langfuse/exporter
-WorkingDirectory=/usr/local/langfuse/exporter
+Environment=EXPORTER_ROOT=/usr/local/langfuse/codex-langfuse-exporter
+WorkingDirectory=/usr/local/langfuse/codex-langfuse-exporter
 Environment=PYTHONUNBUFFERED=1
 StateDirectory=codex-langfuse-exporter
-ExecStart=/usr/bin/python3 ${EXPORTER_ROOT}/codex_langfuse_sync.py --days 1 --limit 50 --state-file /var/lib/codex-langfuse-exporter/state.json
+ExecStart=/usr/bin/python3 ${EXPORTER_ROOT}/codex_langfuse_sync.py --days 1 --limit 50 --state-file /var/lib/codex-langfuse-exporter/codex_langfuse_sync_state.json
 Nice=10
 
 [Install]

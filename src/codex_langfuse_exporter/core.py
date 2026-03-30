@@ -18,8 +18,13 @@ except ModuleNotFoundError:
     tomllib = None
 
 
-DEFAULT_CODEX_CONFIG = Path("/root/.codex/config.toml")
-DEFAULT_CODEX_SESSIONS = Path("/root/.codex/sessions")
+def default_codex_root() -> Path:
+    return Path.home() / ".codex"
+
+
+DEFAULT_CODEX_ROOT = default_codex_root()
+DEFAULT_CODEX_CONFIG = DEFAULT_CODEX_ROOT / "config.toml"
+DEFAULT_CODEX_SESSIONS = DEFAULT_CODEX_ROOT / "sessions"
 DEFAULT_LANGFUSE_ENVIRONMENT = "dev"
 DEFAULT_TIMEOUT_SEC = 30
 
@@ -165,8 +170,8 @@ class TurnRecord:
             return self.assistant_messages[-1][0]
         return ""
 
-    def trace_name(self) -> str:
-        if self.user_messages:
+    def trace_name(self, include_prompt: bool = True) -> str:
+        if include_prompt and self.user_messages:
             prompt = self.user_messages[-1].replace("\n", " ")
             return f"Codex Turn: {prompt[:80]}"
         return f"Codex Turn {self.turn_id}"
@@ -187,14 +192,22 @@ class TurnRecord:
     def state_key(self) -> str:
         return f"{self.session_id}:{self.turn_id}"
 
-    def sync_fingerprint(self) -> str:
+    def sync_fingerprint(
+        self,
+        include_prompt: bool = True,
+        include_output: bool = True,
+        include_usage: bool = True,
+    ) -> str:
         payload = {
+            "include_prompt": include_prompt,
+            "include_output": include_output,
+            "include_usage": include_usage,
             "model": self.model or "",
             "start_ts": self.start_ts.isoformat() if self.start_ts else "",
             "end_ts": self.end_ts.isoformat() if self.end_ts else "",
-            "input": self.input_payload(),
-            "output": self.output_payload(),
-            "usage": self.usage.to_langfuse_usage(),
+            "input": self.input_payload() if include_prompt else "",
+            "output": self.output_payload() if include_output else "",
+            "usage": self.usage.to_langfuse_usage() if include_usage else {},
         }
         raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -213,6 +226,9 @@ class SyncOptions:
     header_overrides: dict[str, str] = field(default_factory=dict)
     public_key_override: str | None = None
     langfuse_environment: str = DEFAULT_LANGFUSE_ENVIRONMENT
+    include_prompt: bool = True
+    include_output: bool = True
+    include_usage: bool = True
     timeout_sec: int = DEFAULT_TIMEOUT_SEC
 
 
@@ -224,6 +240,9 @@ class SyncSummary:
     turns_to_send: int
     dry_run: bool
     state_file: str | None
+    include_prompt: bool
+    include_output: bool
+    include_usage: bool
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -233,6 +252,9 @@ class SyncSummary:
             "turns_to_send": self.turns_to_send,
             "dry_run": self.dry_run,
             "state_file": self.state_file,
+            "include_prompt": self.include_prompt,
+            "include_output": self.include_output,
+            "include_usage": self.include_usage,
         }
 
 
@@ -408,6 +430,9 @@ def build_payload(
     public_key: str | None,
     cli_version: str | None,
     langfuse_environment: str = DEFAULT_LANGFUSE_ENVIRONMENT,
+    include_prompt: bool = True,
+    include_output: bool = True,
+    include_usage: bool = True,
 ) -> dict[str, Any]:
     spans: list[dict[str, Any]] = []
     scope_attributes: list[dict[str, Any]] = []
@@ -422,20 +447,30 @@ def build_payload(
         end_ts = turn.end_ts or start_ts
         trace_input = turn.input_payload()
         trace_output = turn.output_payload()
-        usage = turn.usage.to_langfuse_usage()
+        usage = turn.usage.to_langfuse_usage() if include_usage else {}
 
         attributes = [
-            attr("langfuse.trace.name", turn.trace_name()),
-            attr("langfuse.trace.input", trace_input),
-            attr("langfuse.trace.output", trace_output),
+            attr("langfuse.trace.name", turn.trace_name(include_prompt=include_prompt)),
             attr("langfuse.trace.metadata", turn.metadata_json()),
             attr("session.id", turn.session_id),
             attr("langfuse.observation.type", "generation"),
             attr("langfuse.observation.model.name", model),
-            attr("langfuse.observation.input", trace_input),
-            attr("langfuse.observation.output", trace_output),
             attr("langfuse.observation.metadata", turn.metadata_json()),
         ]
+        if include_prompt:
+            attributes.extend(
+                [
+                    attr("langfuse.trace.input", trace_input),
+                    attr("langfuse.observation.input", trace_input),
+                ]
+            )
+        if include_output:
+            attributes.extend(
+                [
+                    attr("langfuse.trace.output", trace_output),
+                    attr("langfuse.observation.output", trace_output),
+                ]
+            )
         if usage:
             attributes.append(
                 attr(
@@ -535,7 +570,11 @@ def prepare_sync(options: SyncOptions) -> PreparedSync:
                 continue
             eligible_turns += 1
             if options.state_file:
-                fingerprint = turn.sync_fingerprint()
+                fingerprint = turn.sync_fingerprint(
+                    include_prompt=options.include_prompt,
+                    include_output=options.include_output,
+                    include_usage=options.include_usage,
+                )
                 if previous_state.get(turn.state_key()) == fingerprint:
                     continue
                 next_state[turn.state_key()] = fingerprint
@@ -546,6 +585,9 @@ def prepare_sync(options: SyncOptions) -> PreparedSync:
         public_key=http_config.public_key,
         cli_version=cli_version,
         langfuse_environment=options.langfuse_environment,
+        include_prompt=options.include_prompt,
+        include_output=options.include_output,
+        include_usage=options.include_usage,
     )
     summary = SyncSummary(
         endpoint=http_config.endpoint,
@@ -554,6 +596,9 @@ def prepare_sync(options: SyncOptions) -> PreparedSync:
         turns_to_send=len(selected_turns),
         dry_run=options.dry_run,
         state_file=str(options.state_file) if options.state_file else None,
+        include_prompt=options.include_prompt,
+        include_output=options.include_output,
+        include_usage=options.include_usage,
     )
     return PreparedSync(
         summary=summary,
