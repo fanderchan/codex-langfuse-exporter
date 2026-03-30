@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/fanderchan/codex-langfuse-exporter/actions/workflows/ci.yml/badge.svg)](https://github.com/fanderchan/codex-langfuse-exporter/actions/workflows/ci.yml)
 
+English | [简体中文](./README.zh-CN.md)
+
 Backfill Codex local session data into Langfuse as synthetic `generation`
 observations.
 
