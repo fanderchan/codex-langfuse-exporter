@@ -25,6 +25,11 @@ classifiers = [
   "Topic :: System :: Monitoring",
 ]
 
+[project.urls]
+Homepage = "https://github.com/fanderchan/codex-langfuse-exporter"
+Repository = "https://github.com/fanderchan/codex-langfuse-exporter"
+Issues = "https://github.com/fanderchan/codex-langfuse-exporter/issues"
+
 [project.scripts]
 codex-langfuse-exporter = "codex_langfuse_exporter.cli:main"
 

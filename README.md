@@ -1,5 +1,7 @@
 # Codex Langfuse Exporter
 
+[![CI](https://github.com/fanderchan/codex-langfuse-exporter/actions/workflows/ci.yml/badge.svg)](https://github.com/fanderchan/codex-langfuse-exporter/actions/workflows/ci.yml)
+
 Backfill Codex local session data into Langfuse as synthetic `generation`
 observations.
 
