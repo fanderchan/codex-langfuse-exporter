@@ -27,6 +27,7 @@ DEFAULT_CODEX_CONFIG = DEFAULT_CODEX_ROOT / "config.toml"
 DEFAULT_CODEX_SESSIONS = DEFAULT_CODEX_ROOT / "sessions"
 DEFAULT_LANGFUSE_ENVIRONMENT = "dev"
 DEFAULT_TIMEOUT_SEC = 30
+EXPORT_SCHEMA_VERSION = 2
 
 
 def parse_iso8601(value: str | None) -> datetime | None:
@@ -63,7 +64,15 @@ def is_bootstrap_context(text: str) -> bool:
 
 
 def attr(key: str, value: Any) -> dict[str, Any]:
-    return {"key": key, "value": {"stringValue": str(value)}}
+    if isinstance(value, bool):
+        encoded = {"boolValue": value}
+    elif isinstance(value, int):
+        encoded = {"intValue": str(value)}
+    elif isinstance(value, float):
+        encoded = {"doubleValue": value}
+    else:
+        encoded = {"stringValue": str(value)}
+    return {"key": key, "value": encoded}
 
 
 def derive_public_key(headers: dict[str, str]) -> str | None:
@@ -117,6 +126,14 @@ class TokenUsage:
         if self.total_tokens:
             usage["total"] = self.total_tokens
 
+        return usage
+
+    def to_otel_usage(self) -> dict[str, int]:
+        usage: dict[str, int] = {}
+        if self.input_tokens:
+            usage["gen_ai.usage.input_tokens"] = self.input_tokens
+        if self.output_tokens:
+            usage["gen_ai.usage.output_tokens"] = self.output_tokens
         return usage
 
 
@@ -199,6 +216,7 @@ class TurnRecord:
         include_usage: bool = True,
     ) -> str:
         payload = {
+            "export_schema_version": EXPORT_SCHEMA_VERSION,
             "include_prompt": include_prompt,
             "include_output": include_output,
             "include_usage": include_usage,
@@ -276,16 +294,21 @@ def load_otlp_config(
     headers: dict[str, str] = {}
 
     if path.exists():
+        parsed = False
         if tomllib is not None:
-            with path.open("rb") as fh:
-                data = tomllib.load(fh)
-            exporter = (
-                (((data.get("otel") or {}).get("trace_exporter") or {}).get("otlp-http"))
-                or {}
-            )
-            endpoint = exporter.get("endpoint")
-            headers = dict(exporter.get("headers") or {})
-        else:
+            try:
+                with path.open("rb") as fh:
+                    data = tomllib.load(fh)
+                exporter = (
+                    (((data.get("otel") or {}).get("trace_exporter") or {}).get("otlp-http"))
+                    or {}
+                )
+                endpoint = exporter.get("endpoint")
+                headers = dict(exporter.get("headers") or {})
+                parsed = True
+            except Exception:
+                pass
+        if not parsed:
             text = path.read_text(encoding="utf-8")
             endpoint_match = re.search(r'endpoint\s*=\s*"([^"]+)"', text)
             auth_match = re.search(r'Authorization\s*=\s*"([^"]+)"', text)
@@ -448,6 +471,7 @@ def build_payload(
         trace_input = turn.input_payload()
         trace_output = turn.output_payload()
         usage = turn.usage.to_langfuse_usage() if include_usage else {}
+        otel_usage = turn.usage.to_otel_usage() if include_usage else {}
 
         attributes = [
             attr("langfuse.trace.name", turn.trace_name(include_prompt=include_prompt)),
@@ -456,6 +480,9 @@ def build_payload(
             attr("langfuse.observation.type", "generation"),
             attr("langfuse.observation.model.name", model),
             attr("langfuse.observation.metadata", turn.metadata_json()),
+            attr("gen_ai.operation.name", "chat"),
+            attr("gen_ai.request.model", model),
+            attr("gen_ai.response.model", model),
         ]
         if include_prompt:
             attributes.extend(
@@ -478,6 +505,9 @@ def build_payload(
                     json.dumps(usage, ensure_ascii=False, sort_keys=True),
                 )
             )
+        if otel_usage:
+            for key, value in otel_usage.items():
+                attributes.append(attr(key, value))
 
         spans.append(
             {

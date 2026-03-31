@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 TESTS_ROOT = Path(__file__).resolve().parent
 SRC_ROOT = TESTS_ROOT.parent / "src"
@@ -13,10 +14,26 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from codex_langfuse_exporter.cli import build_parser
+from codex_langfuse_exporter.cli import main
 from codex_langfuse_exporter.core import DEFAULT_CODEX_CONFIG
 from codex_langfuse_exporter.core import DEFAULT_CODEX_SESSIONS
+from codex_langfuse_exporter.core import HttpConfig
+from codex_langfuse_exporter.core import PreparedSync
+from codex_langfuse_exporter.core import SyncSummary
 from codex_langfuse_exporter.core import build_payload
 from codex_langfuse_exporter.core import parse_session
+
+
+def decode_attr_value(raw: dict[str, object]) -> object:
+    if "stringValue" in raw:
+        return raw["stringValue"]
+    if "intValue" in raw:
+        return int(str(raw["intValue"]))
+    if "doubleValue" in raw:
+        return raw["doubleValue"]
+    if "boolValue" in raw:
+        return raw["boolValue"]
+    raise AssertionError(f"Unsupported attribute value: {raw!r}")
 
 
 class ParseSessionTests(unittest.TestCase):
@@ -184,14 +201,19 @@ class BuildPayloadTests(unittest.TestCase):
         self.assertEqual(len(resource_spans), 1)
         scope_span = resource_spans[0]["scopeSpans"][0]
         self.assertEqual(scope_span["scope"]["name"], "codex-langfuse-exporter")
-        self.assertEqual(scope_span["scope"]["attributes"][0]["value"]["stringValue"], "pk-lf-test")
+        self.assertEqual(
+            decode_attr_value(scope_span["scope"]["attributes"][0]["value"]),
+            "pk-lf-test",
+        )
 
         span = scope_span["spans"][0]
         self.assertEqual(span["name"], "codex.turn.backfill")
-        attrs = {item["key"]: item["value"]["stringValue"] for item in span["attributes"]}
+        attrs = {item["key"]: decode_attr_value(item["value"]) for item in span["attributes"]}
         self.assertEqual(attrs["langfuse.observation.type"], "generation")
         self.assertEqual(attrs["langfuse.observation.input"], "Ship a release")
         self.assertEqual(attrs["langfuse.observation.output"], "Release notes are ready.")
+        self.assertEqual(attrs["gen_ai.request.model"], "gpt-5.4")
+        self.assertEqual(attrs["gen_ai.response.model"], "gpt-5.4")
 
     def test_build_payload_can_export_usage_only_without_text_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -268,7 +290,7 @@ class BuildPayloadTests(unittest.TestCase):
         )
 
         span = payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
-        attrs = {item["key"]: item["value"]["stringValue"] for item in span["attributes"]}
+        attrs = {item["key"]: decode_attr_value(item["value"]) for item in span["attributes"]}
         self.assertEqual(attrs["langfuse.trace.name"], "Codex Turn turn-3")
         self.assertNotIn("langfuse.trace.input", attrs)
         self.assertNotIn("langfuse.trace.output", attrs)
@@ -284,6 +306,8 @@ class BuildPayloadTests(unittest.TestCase):
                 "total": 62,
             },
         )
+        self.assertEqual(attrs["gen_ai.usage.input_tokens"], 50)
+        self.assertEqual(attrs["gen_ai.usage.output_tokens"], 12)
 
     def test_sync_fingerprint_changes_when_export_selection_changes(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -336,6 +360,53 @@ class CliTests(unittest.TestCase):
         self.assertFalse(args.prompt)
         self.assertFalse(args.output)
         self.assertTrue(args.usage)
+
+    def test_cli_accepts_log_file_argument(self) -> None:
+        args = build_parser().parse_args(["--log-file", "state/task.log"])
+        self.assertEqual(args.log_file, Path("state/task.log"))
+
+    def test_main_writes_log_file_for_scheduled_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "scheduled-task.log"
+            prepared = PreparedSync(
+                summary=SyncSummary(
+                    endpoint="https://example.com/otlp",
+                    inspected_sessions=2,
+                    eligible_turns=3,
+                    turns_to_send=1,
+                    dry_run=False,
+                    state_file=str(Path(tmpdir) / "state.json"),
+                    include_prompt=False,
+                    include_output=False,
+                    include_usage=True,
+                ),
+                payload={"resourceSpans": []},
+                http_config=HttpConfig(
+                    endpoint="https://example.com/otlp",
+                    headers={},
+                    public_key="pk-test",
+                ),
+                next_state={"turn-1": "fingerprint"},
+            )
+
+            with mock.patch(
+                "codex_langfuse_exporter.cli.prepare_sync",
+                return_value=prepared,
+            ), mock.patch(
+                "codex_langfuse_exporter.cli.post_payload",
+                return_value=(200, "ok"),
+            ), mock.patch(
+                "codex_langfuse_exporter.cli.save_state",
+            ) as save_state:
+                exit_code = main(["--log-file", str(log_path)])
+
+            self.assertEqual(exit_code, 0)
+            save_state.assert_called_once_with(None, {"turn-1": "fingerprint"})
+
+            log_text = log_path.read_text(encoding="utf-8")
+            self.assertIn("Starting sync:", log_text)
+            self.assertIn("Prepared sync summary:", log_text)
+            self.assertIn("Langfuse response: HTTP 200 ok", log_text)
 
 
 if __name__ == "__main__":

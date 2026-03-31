@@ -4,10 +4,12 @@ $PythonPath = "C:\Python314\python.exe"
 $ProjectDir = "C:\path\to\codex-langfuse-exporter"
 $ScriptPath = Join-Path $ProjectDir "codex_langfuse_sync.py"
 $StateFilePath = Join-Path $ProjectDir "state\state.json"
+$LogFilePath = Join-Path $ProjectDir "state\scheduled-task.log"
 $ExporterArgs = @(
   "--days", "1",
   "--limit", "50",
   "--state-file", $StateFilePath,
+  "--log-file", $LogFilePath,
   "--no-prompt",
   "--no-output"
 )
@@ -35,8 +37,16 @@ if (-not (Get-Command Register-ScheduledTask -ErrorAction SilentlyContinue)) {
   throw "Register-ScheduledTask is unavailable. Run this on Windows PowerShell 5.1 or newer."
 }
 
-if (-not (Test-Path -LiteralPath $PythonPath -PathType Leaf)) {
-  throw "Python executable not found: $PythonPath"
+$TaskPythonPath = $PythonPath
+if ([System.IO.Path]::GetFileName($PythonPath) -ieq "python.exe") {
+  $pythonwPath = Join-Path (Split-Path -Path $PythonPath -Parent) "pythonw.exe"
+  if (Test-Path -LiteralPath $pythonwPath -PathType Leaf) {
+    $TaskPythonPath = $pythonwPath
+  }
+}
+
+if (-not (Test-Path -LiteralPath $TaskPythonPath -PathType Leaf)) {
+  throw "Python executable not found: $TaskPythonPath"
 }
 
 if (-not (Test-Path -LiteralPath $ProjectDir -PathType Container)) {
@@ -72,7 +82,7 @@ foreach ($arg in $ExporterArgs) {
 }
 
 $action = New-ScheduledTaskAction `
-  -Execute $PythonPath `
+  -Execute $TaskPythonPath `
   -Argument ($argumentList -join " ") `
   -WorkingDirectory $ProjectDir
 
@@ -91,7 +101,7 @@ $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 $principal = New-ScheduledTaskPrincipal `
   -UserId $currentUser `
   -LogonType Interactive `
-  -RunLevel LeastPrivilege
+  -RunLevel Limited
 
 if ($ReplaceExistingTask) {
   $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
@@ -112,8 +122,9 @@ Register-ScheduledTask `
 Write-Host "Registered scheduled task successfully."
 Write-Host "Task name: $TaskName"
 Write-Host "Runs as: $currentUser (interactive logon; task runs while this user is logged in)"
-Write-Host "Program: $PythonPath"
+Write-Host "Program: $TaskPythonPath"
 Write-Host "Arguments: $($argumentList -join ' ')"
+Write-Host "Log file: $LogFilePath"
 Write-Host "Working directory: $ProjectDir"
 Write-Host "First run: $($startAt.ToString('yyyy-MM-dd HH:mm'))"
 Write-Host "Repeat interval: every $RepeatMinutes minute(s)"
