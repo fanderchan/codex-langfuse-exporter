@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import re
 import urllib.request
 from dataclasses import dataclass, field
@@ -84,6 +85,40 @@ def derive_public_key(headers: dict[str, str]) -> str | None:
     except Exception:
         return None
     return raw.split(":", 1)[0]
+
+
+def env_var(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def build_basic_auth(public_key: str, secret_key: str) -> str:
+    token = base64.b64encode(f"{public_key}:{secret_key}".encode("utf-8")).decode("ascii")
+    return f"Basic {token}"
+
+
+def load_otlp_env_config() -> tuple[str | None, dict[str, str], str | None]:
+    endpoint = env_var("CODEX_LANGFUSE_ENDPOINT")
+
+    public_key = env_var("CODEX_LANGFUSE_PUBLIC_KEY") or env_var("LANGFUSE_PUBLIC_KEY")
+    secret_key = env_var("CODEX_LANGFUSE_SECRET_KEY") or env_var("LANGFUSE_SECRET_KEY")
+    authorization = env_var("CODEX_LANGFUSE_AUTHORIZATION")
+    if not authorization and public_key and secret_key:
+        authorization = build_basic_auth(public_key, secret_key)
+
+    headers: dict[str, str] = {}
+    if authorization:
+        headers["Authorization"] = authorization
+
+    ingestion_version = env_var("CODEX_LANGFUSE_INGESTION_VERSION")
+    if ingestion_version:
+        headers["x-langfuse-ingestion-version"] = ingestion_version
+
+    derived_public_key = derive_public_key(headers) or public_key
+    return endpoint, headers, derived_public_key
 
 
 @dataclass
@@ -292,6 +327,7 @@ def load_otlp_config(
 ) -> HttpConfig:
     endpoint = None
     headers: dict[str, str] = {}
+    env_endpoint, env_headers, env_public_key = load_otlp_env_config()
 
     if path.exists():
         parsed = False
@@ -325,6 +361,10 @@ def load_otlp_config(
     elif not endpoint_override:
         raise FileNotFoundError(f"Codex config not found: {path}")
 
+    if env_endpoint:
+        endpoint = env_endpoint
+    if env_headers:
+        headers.update(env_headers)
     if endpoint_override:
         endpoint = endpoint_override
     if header_overrides:
@@ -333,7 +373,7 @@ def load_otlp_config(
     if not endpoint:
         raise ValueError(f"Missing otel.trace_exporter.otlp-http.endpoint in {path}")
 
-    public_key = public_key_override or derive_public_key(headers)
+    public_key = public_key_override or derive_public_key(headers) or env_public_key
     return HttpConfig(endpoint=endpoint, headers=headers, public_key=public_key)
 
 

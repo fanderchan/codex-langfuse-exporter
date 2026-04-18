@@ -27,6 +27,8 @@ those fields become visible in Langfuse.
   observations
 - Supports incremental sync via a state file
 - Can run ad hoc, from cron, or from the included systemd timer
+- Works with Codex CLI and Codex Desktop/App session files on macOS because
+  both land in `~/.codex/sessions`
 
 ## What it does not do
 
@@ -126,6 +128,31 @@ python3 /path/to/codex-langfuse-exporter/codex_langfuse_sync.py --days 1 --limit
 
 The legacy script stays supported and simply dispatches into the packaged CLI.
 
+### macOS quick start
+
+If your Mac does not already have Langfuse OTEL settings in
+`~/.codex/config.toml`, you can run the exporter from environment variables
+instead:
+
+```bash
+cp macos/codex-langfuse-exporter.env.example macos/codex-langfuse-exporter.env
+```
+
+Then fill in your real `CODEX_LANGFUSE_SECRET_KEY` and run:
+
+```bash
+./macos/run-codex-langfuse-exporter.sh
+```
+
+The repo also includes a macOS tunnel helper equivalent to the Windows `.bat`:
+
+```bash
+./macos/start-langfuse-tunnel.command
+```
+
+That script opens `http://127.0.0.1:3000` and keeps the SSH tunnel attached to
+the current Terminal window until you press `Ctrl+C`.
+
 ## Configuration
 
 ### Default Codex paths
@@ -175,6 +202,22 @@ codex-langfuse-exporter \
   --header 'Authorization=Basic ...' \
   --header 'x-langfuse-ingestion-version=4'
 ```
+
+### Environment-variable OTLP fallback
+
+Useful on macOS when you want the exporter to send data without first editing
+`~/.codex/config.toml`:
+
+```bash
+export CODEX_LANGFUSE_ENDPOINT='http://127.0.0.1:3000/api/public/otel/v1/traces'
+export CODEX_LANGFUSE_PUBLIC_KEY='pk-lf-...'
+export CODEX_LANGFUSE_SECRET_KEY='sk-lf-...'
+export CODEX_LANGFUSE_INGESTION_VERSION='4'
+codex-langfuse-exporter --days 1 --limit 50 --no-prompt --no-output
+```
+
+Precedence is: CLI flags, then environment variables, then Codex
+`config.toml`.
 
 ### Incremental sync
 
@@ -276,6 +319,21 @@ Recommended Task Scheduler fields:
 
 Use the full path to `python.exe` rather than `py` so scheduled runs do not
 depend on PATH or launcher behavior.
+
+## macOS launchd
+
+The macOS equivalent of Task Scheduler / systemd is `launchd`. This repo ships
+an installer script that writes a per-user LaunchAgent and schedules the
+exporter every 10 minutes by default:
+
+```bash
+./macos/install-codex-langfuse-launch-agent.sh
+```
+
+The LaunchAgent runs
+[`macos/run-codex-langfuse-exporter.sh`](./macos/run-codex-langfuse-exporter.sh),
+so you can keep secrets in `macos/codex-langfuse-exporter.env` or
+`~/.config/codex-langfuse-exporter.env` instead of committing them.
 
 ## How the exporter maps data
 

@@ -21,6 +21,7 @@ from codex_langfuse_exporter.core import HttpConfig
 from codex_langfuse_exporter.core import PreparedSync
 from codex_langfuse_exporter.core import SyncSummary
 from codex_langfuse_exporter.core import build_payload
+from codex_langfuse_exporter.core import load_otlp_config
 from codex_langfuse_exporter.core import parse_session
 
 
@@ -352,6 +353,31 @@ class ConfigDefaultsTests(unittest.TestCase):
         codex_root = Path.home() / ".codex"
         self.assertEqual(DEFAULT_CODEX_CONFIG, codex_root / "config.toml")
         self.assertEqual(DEFAULT_CODEX_SESSIONS, codex_root / "sessions")
+
+    def test_env_can_supply_otlp_config_when_codex_config_has_no_otel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.toml"
+            config_path.write_text('model = "gpt-5.4"\n', encoding="utf-8")
+
+            with mock.patch.dict(
+                "os.environ",
+                {
+                    "CODEX_LANGFUSE_ENDPOINT": "http://127.0.0.1:3000/api/public/otel/v1/traces",
+                    "CODEX_LANGFUSE_PUBLIC_KEY": "pk-lf-test",
+                    "CODEX_LANGFUSE_SECRET_KEY": "sk-lf-test",
+                    "CODEX_LANGFUSE_INGESTION_VERSION": "4",
+                },
+                clear=False,
+            ):
+                http_config = load_otlp_config(config_path)
+
+        self.assertEqual(
+            http_config.endpoint,
+            "http://127.0.0.1:3000/api/public/otel/v1/traces",
+        )
+        self.assertEqual(http_config.headers["x-langfuse-ingestion-version"], "4")
+        self.assertTrue(http_config.headers["Authorization"].startswith("Basic "))
+        self.assertEqual(http_config.public_key, "pk-lf-test")
 
 
 class CliTests(unittest.TestCase):

@@ -26,6 +26,8 @@ Langfuse 中可见。
 - 使用稳定的 trace id 和 span id，重复同步时会落到同一批回填 observation 上
 - 支持用 state file 做增量同步
 - 可以手动执行，也可以挂 cron 或 systemd timer
+- 在 macOS 上同样适用于 Codex CLI 和 Codex Desktop/App，因为它们的
+  session 都落在 `~/.codex/sessions`
 
 ## 它不能做什么
 
@@ -123,6 +125,30 @@ python3 /path/to/codex-langfuse-exporter/codex_langfuse_sync.py --days 1 --limit
 
 兼容脚本入口会继续保留，内部只是转发到打包后的 CLI。
 
+### macOS 快速开始
+
+如果这台 Mac 的 `~/.codex/config.toml` 里还没有 Langfuse OTEL 配置，可以先
+走环境变量方式，不必马上改 Codex 配置：
+
+```bash
+cp macos/codex-langfuse-exporter.env.example macos/codex-langfuse-exporter.env
+```
+
+把真实的 `CODEX_LANGFUSE_SECRET_KEY` 填进去后，直接运行：
+
+```bash
+./macos/run-codex-langfuse-exporter.sh
+```
+
+仓库里也带了一个和 Windows `.bat` 等价的 macOS 隧道脚本：
+
+```bash
+./macos/start-langfuse-tunnel.command
+```
+
+这个脚本会先打开 `http://127.0.0.1:3000`，然后在当前 Terminal 窗口维持 SSH
+隧道，按 `Ctrl+C` 即可停止。
+
 ## 配置说明
 
 ### 默认 Codex 路径
@@ -171,6 +197,20 @@ codex-langfuse-exporter \
   --header 'Authorization=Basic ...' \
   --header 'x-langfuse-ingestion-version=4'
 ```
+
+### 环境变量 OTLP 兜底
+
+适合 macOS 场景下还不想先改 `~/.codex/config.toml` 的情况：
+
+```bash
+export CODEX_LANGFUSE_ENDPOINT='http://127.0.0.1:3000/api/public/otel/v1/traces'
+export CODEX_LANGFUSE_PUBLIC_KEY='pk-lf-...'
+export CODEX_LANGFUSE_SECRET_KEY='sk-lf-...'
+export CODEX_LANGFUSE_INGESTION_VERSION='4'
+codex-langfuse-exporter --days 1 --limit 50 --no-prompt --no-output
+```
+
+优先级顺序是：CLI 参数，其次环境变量，最后才是 Codex 的 `config.toml`。
 
 ### 增量同步
 
@@ -269,6 +309,20 @@ C:\Python314\python.exe C:\path\to\codex-langfuse-exporter\codex_langfuse_sync.p
 
 建议直接填写 `python.exe` 的完整路径，而不是 `py`，这样不会依赖 PATH 或
 Python Launcher 的行为。
+
+## macOS launchd
+
+macOS 对应的定时机制是 `launchd`。仓库里提供了安装脚本，会为当前用户写入
+一个 LaunchAgent，默认每 10 分钟执行一次 exporter：
+
+```bash
+./macos/install-codex-langfuse-launch-agent.sh
+```
+
+这个 LaunchAgent 实际执行的是
+[`macos/run-codex-langfuse-exporter.sh`](./macos/run-codex-langfuse-exporter.sh)，
+所以你可以把 secret 放在 `macos/codex-langfuse-exporter.env` 或
+`~/.config/codex-langfuse-exporter.env`，不用提交到仓库里。
 
 ## 数据映射方式
 
